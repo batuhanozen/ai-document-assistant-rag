@@ -82,8 +82,17 @@ def validate_answer(payload: object, sources: list[Source]) -> GeneratedAnswer:
 class DemoProvider:
     def generate(self, question: str, sources: list[Source]) -> GeneratedAnswer:
         # An exact excerpt baseline; deliberately no fabricated natural-language synthesis.
-        query_terms = set(terms(question))
-        matches = [s for s in sources if query_terms & set(terms(s.text))][:3]
+        def matching_terms(text: str) -> set[str]:
+            # A small lexical normalization, not a semantic model: start/starts, day/days.
+            return {
+                word[:-1]
+                if len(word) > 3 and word.endswith("s") and not word.endswith("ss")
+                else word
+                for word in terms(text)
+            }
+
+        query_terms = matching_terms(question)
+        matches = [s for s in sources if query_terms & matching_terms(s.text)][:3]
         if not matches:
             return GeneratedAnswer(ABSTENTION, [], True)
         citations = []
@@ -92,7 +101,7 @@ class DemoProvider:
 
             # Pick a relevant verbatim paragraph, rather than unrelated surrounding sections.
             def relevance(paragraph: str) -> float:
-                paragraph_terms = set(terms(paragraph))
+                paragraph_terms = matching_terms(paragraph)
                 return len(query_terms & paragraph_terms) / math.sqrt(len(paragraph_terms) or 1)
 
             quote = max(paragraphs, key=relevance)[:600]

@@ -210,3 +210,17 @@ def test_index_configuration_mismatch_fails(client):
     service.settings.chunk_size += 1
     with pytest.raises(RuntimeError, match="configuration changed"):
         service._initialize()
+
+
+@pytest.mark.parametrize(
+    "origin", ["https://localhost", "http://[", "null", "http://localhost/path"]
+)
+def test_invalid_or_cross_scheme_origins_are_rejected(client, origin):
+    response = client.delete("/api/history", headers={"Origin": origin})
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "origin_rejected"
+
+
+def test_non_ascii_unrelated_header_does_not_crash(client):
+    response = client.get("/api/health", headers={b"X-Display-Name": b"caf\xe9"})
+    assert response.status_code == 200

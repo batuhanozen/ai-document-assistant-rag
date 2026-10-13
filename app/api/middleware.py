@@ -13,7 +13,10 @@ class RequestGuard:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
-        headers = {key.decode().lower(): value.decode() for key, value in scope["headers"]}
+        headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope["headers"]
+        }
 
         async def reject(code, message, status):
             await JSONResponse({"error": {"code": code, "message": message}}, status_code=status)(
@@ -22,8 +25,20 @@ class RequestGuard:
 
         if scope["method"] in {"POST", "PUT", "PATCH", "DELETE"}:
             origin = headers.get("origin")
-            if origin and urlsplit(origin).netloc != headers.get("host"):
-                return await reject("origin_rejected", "Cross-origin writes are not allowed.", 403)
+            if origin:
+                try:
+                    parsed = urlsplit(origin)
+                    same_origin = (
+                        parsed.scheme == scope["scheme"]
+                        and parsed.netloc == headers.get("host")
+                        and not (parsed.path or parsed.query or parsed.fragment)
+                    )
+                except ValueError:
+                    same_origin = False
+                if not same_origin:
+                    return await reject(
+                        "origin_rejected", "Cross-origin writes are not allowed.", 403
+                    )
             limit = self.upload_limit if scope["path"] == "/api/documents" else 16384
             length = headers.get("content-length")
             if length:

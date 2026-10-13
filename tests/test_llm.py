@@ -128,3 +128,17 @@ def test_demo_selects_relevant_verbatim_paragraph(sources):
     assert result.citations[0].quote == "Annual leave is 28 days."
     assert result.citations[0].quote in text
     assert "350" not in result.answer
+
+
+def test_demo_matches_inflections_in_timeline(sources):
+    from app.services.llm import DemoProvider
+
+    text = (
+        "Purpose\nAurora is a pilot for the support team.\n\n"
+        "Timeline\nThe Aurora pilot starts on 2 November 2026 and runs for six weeks."
+    )
+    result = DemoProvider().generate(
+        "When does the Aurora pilot start?", [Source(sources[0].citation, text)]
+    )
+    assert "2 November 2026" in result.answer
+    assert result.citations[0].quote in text

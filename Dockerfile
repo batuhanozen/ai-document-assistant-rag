@@ -4,7 +4,8 @@ WORKDIR /app
 ARG INSTALL_AI=false
 COPY pyproject.toml README.md LICENSE ./
 COPY app ./app
-RUN if [ "$INSTALL_AI" = "true" ]; then pip install '.[ai]'; else pip install .; fi \
+RUN python -m pip install --upgrade 'pip>=26.2' \
+    && if [ "$INSTALL_AI" = "true" ]; then pip install '.[ai]'; else pip install .; fi \
     && useradd --create-home --uid 10001 assistant \
     && mkdir /app/data && chown assistant:assistant /app/data
 USER assistant

@@ -75,6 +75,7 @@ From the repository root:
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
+python -m pip install --upgrade 'pip>=26.2'
 python -m pip install -e '.[dev]'
 cp .env.example .env
 uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8011 --workers 1 --no-access-log
@@ -223,7 +224,7 @@ To exercise the real Sentence Transformers adapter with Chroma (initial download
 
 ```bash
 python -m pip install -e '.[ai]'
-HF_HOME=./data/model-cache python scripts/check_semantic.py
+HF_HOME=./data/model-cache python -m scripts.check_semantic
 ```
 
 After the model is cached, add `HF_HUB_OFFLINE=1` for an offline rerun. The script verifies normalized 384-dimensional embeddings, paraphrase ranking, Chroma retrieval, and vector deletion. It never calls an LLM.
