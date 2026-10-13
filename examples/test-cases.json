@@ -1,0 +1,6 @@
+[
+  {"question": "How many days of annual leave do employees receive?", "document": "atlas-handbook.txt", "expected_text": "28 days", "insufficient_context": false},
+  {"question": "What is the annual learning budget?", "document": "atlas-handbook.txt", "expected_text": "1,200", "insufficient_context": false},
+  {"question": "When does the Aurora pilot start?", "document": "aurora-project.txt", "expected_text": "2 November 2026", "insufficient_context": false},
+  {"question": "What is the quantum reactor temperature?", "document": null, "expected_text": "enough information", "insufficient_context": true}
+]

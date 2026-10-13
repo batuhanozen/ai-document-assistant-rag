@@ -1,0 +1,14 @@
+.git
+.venv
+.env
+.env.*
+!.env.example
+data
+private-documents
+__pycache__
+.pytest_cache
+.ruff_cache
+.coverage
+*.egg-info
+tests
+docs

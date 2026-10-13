@@ -1,0 +1,14 @@
+PROJECT AURORA · DELIVERY BRIEF
+Synthetic demonstration document. This project, its dates, and its people are fictional.
+
+Purpose
+Project Aurora is a document search pilot for the Atlas Labs support team. The pilot covers only synthetic support articles and internal demonstration handbooks.
+
+Timeline
+The Aurora pilot starts on 2 November 2026 and runs for six weeks. The internal demo is scheduled for 11 December 2026. Mira Chen is the fictional project owner.
+
+Success criteria
+The target is at least 85 percent correct source attribution on a reviewed set of 40 questions. A question with no supporting document must receive an insufficient-information response. Median response time should remain below eight seconds on the demonstration laptop.
+
+Data handling
+The pilot must not use customer documents, credentials, or personal data. Uploaded documents are stored only on the local demonstration machine. Deleting a document must also remove its vector records.

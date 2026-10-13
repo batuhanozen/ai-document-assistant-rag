@@ -1,0 +1,18 @@
+services:
+  assistant:
+    build:
+      context: .
+      args:
+        INSTALL_AI: ${INSTALL_AI:-false}
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /app/data
+    volumes:
+      - assistant-data:/app/data
+    restart: unless-stopped
+    init: true
+volumes:
+  assistant-data:

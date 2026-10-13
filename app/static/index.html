@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f8fa">
+  <title>Document Assistant · Your knowledge, connected</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="Document Assistant home"><span class="brand-mark">d<span>·</span></span><span>document<span class="brand-sub">ASSISTANT</span></span></a>
+    <div class="workspace-label"><span class="workspace-icon">W</span><span>My workspace<small>Local document library</small></span><span class="local-dot" aria-label="Local workspace"></span></div>
+    <div class="section-heading"><h2>YOUR DOCUMENTS</h2><span id="document-count">0</span></div>
+    <label class="upload-area" id="drop-zone" tabindex="0" role="button" aria-label="Upload PDF or TXT documents">
+      <input id="file-input" type="file" accept=".pdf,.txt" multiple hidden>
+      <span class="upload-icon" aria-hidden="true">↥</span><strong>Drop documents here</strong><span>or <u>browse files</u></span><small id="upload-limit">PDF or TXT · up to 10 MB</small>
+    </label>
+    <p id="upload-status" class="upload-status" role="status"></p>
+    <div id="document-list" class="document-list"></div>
+    <button id="sample-button" class="sample-button" type="button"><span aria-hidden="true">✧</span> Try sample documents <span aria-hidden="true">↗</span></button>
+    <div class="sidebar-footer"><span class="privacy-icon" aria-hidden="true">⌂</span><div>Made for your knowledge<p id="privacy-note">Your documents stay on this device.</p></div></div>
+  </aside>
+  <main>
+    <header class="topbar"><div><span class="breadcrumb">Workspace</span><span class="slash">/</span><strong>Document chat</strong></div><span id="mode-badge" class="mode-badge">Connecting…</span></header>
+    <div id="error-banner" class="error-banner" role="alert" hidden><span id="error-text"></span><button id="dismiss-error" aria-label="Dismiss error">×</button></div>
+    <section class="chat-layout">
+      <div class="chat-toolbar"><span class="conversation-label"><span class="status-dot"></span> Your knowledge, connected</span><button id="clear-history" class="text-button" type="button">Clear history</button></div>
+      <div id="conversation" class="conversation" aria-live="polite" aria-relevant="additions">
+        <section id="welcome" class="welcome">
+          <div class="welcome-mark" aria-hidden="true">✳</div>
+          <div class="eyebrow">LESS SEARCHING. MORE UNDERSTANDING.</div>
+          <h1>A conversation with<br>your documents.</h1>
+          <p>Bring your files. Ask a question. Find answers<br class="desktop-break"> with the sources to back them up.</p>
+          <div class="feature-row"><span>▤ &nbsp; PDF & TXT</span><span>⌕ &nbsp; Source citations</span><span>◷ &nbsp; Saved history</span></div>
+          <div class="starter-heading">A LITTLE INSPIRATION</div>
+          <div class="suggestions">
+            <button data-question="How many days of annual leave do employees receive?"><span class="suggestion-icon">▤</span><strong>Find the details</strong><span>How many days of annual leave<br>do employees receive?</span><b aria-hidden="true">↗</b></button>
+            <button data-question="When does the Aurora pilot start?"><span class="suggestion-icon">◷</span><strong>Get the timeline</strong><span>When does the Aurora<br>pilot start?</span><b aria-hidden="true">↗</b></button>
+          </div>
+          <p class="sample-hint">Start with your own files, or try our synthetic sample documents.</p>
+        </section>
+      </div>
+      <div class="composer-wrap">
+        <form id="question-form" class="composer">
+          <div class="scope-row"><label for="document-scope">Search in</label><select id="document-scope"><option value="">All documents</option></select><span id="ready-count">0 ready</span></div>
+          <label for="question" class="visually-hidden">Ask a question about your documents</label>
+          <textarea id="question" rows="2" maxlength="2000" placeholder="What would you like to know?" required></textarea>
+          <div class="composer-bottom"><span><kbd>↵</kbd> to send <span class="shortcut-secondary">· Shift + Enter for a new line</span></span><button id="send-button" type="submit" aria-label="Send question">↑</button></div>
+        </form>
+        <p id="mode-note" class="composer-note">Demo mode returns document excerpts. Always check the sources.</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Document Assistant: local secrets and private content
+.env.*
+!.env.example
+/data/
+/private-documents/
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
