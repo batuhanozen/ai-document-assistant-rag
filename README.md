@@ -199,6 +199,8 @@ Common statuses: `413` size/text/page/chunk limits, `415` unsupported type, `422
 
 ## Reliability and security decisions
 
+See [the security assessment](SECURITY.md) for the four unresolved ChromaDB advisories and why their server attack paths are not exposed by this embedded, loopback-only application. The dependency audit is not clean; do not present this project as production-hardened.
+
 - **Citation provenance:** the provider returns source IDs and exact quotes. The server obtains filenames/pages from retrieved metadata and rejects unknown IDs, fabricated quotes, malformed evidence, or unsupported answers without citations. This does not prove every generated claim follows logically from the quotes. Check sources.
 - **Untrusted documents:** document text is JSON-encoded in user context, with an explicit system instruction to ignore embedded commands. The LLM has no tools or access to keys. This reduces risk; prompt injection is not a solved problem.
 - **Cross-store consistency:** SQLite is authoritative. Only `ready` documents are queried. Incomplete indexing remains visible as `failed`; deletion marks `deleting` before vector removal. Failed cleanup is retried on startup, and failed deletion can be retried through the API. No atomic transaction across SQLite and Chroma is claimed.
