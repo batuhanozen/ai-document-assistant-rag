@@ -21,8 +21,10 @@ Service = Annotated[Assistant, Depends(assistant)]
 
 @router.get("/health")
 def health(service: Service) -> dict:
+    service.check_storage()
     return {
         "status": "ok",
+        "storage": "ok",
         "mode": service.settings.app_mode,
         "embedding_backend": service.settings.embedding_backend,
         "max_upload_mb": service.settings.max_upload_mb,

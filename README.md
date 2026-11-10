@@ -142,6 +142,7 @@ Copy [.env.example](.env.example); never commit `.env` or real documents. Enviro
 | `LLM_MODEL` | `gpt-4o-mini` | Provider model ID; change to an available model |
 | `LLM_API_KEY` | empty | Server-side secret; never returned to the browser |
 | `LLM_TIMEOUT_SECONDS` | `45` | HTTP I/O inactivity timeout; connect timeout is 10 seconds |
+| `LLM_MAX_RETRIES` | `2` | Retries for connection failures and HTTP 429/500/502/503/504 (0–5), with 0.5 s exponential backoff capped at 5 s; read timeouts are not retried |
 | `MAX_UPLOAD_MB` | `10` | Raw file size cap, enforced before parsing |
 | `MAX_PDF_PAGES` | `200` | PDF page cap |
 | `PARSING_TIMEOUT_SECONDS` | `30` | PDF parser wall-clock deadline |
@@ -155,7 +156,7 @@ Copy [.env.example](.env.example); never commit `.env` or real documents. Enviro
 
 Similarity scores are retrieval scores, **not probabilities or answer confidence**. Character-based chunking is intentionally simple; larger chunks can exceed an embedding model's token limit and be truncated by that model.
 
-[constraints.txt](constraints.txt) records the installed dependency versions from the Python 3.12/macOS verification environment, including optional AI and development packages. To reproduce those versions on a compatible interpreter, add `-c constraints.txt` to the install command. It is a version snapshot, not a cross-platform, hash-verified lockfile; unlisted platform dependencies can still vary.
+[constraints.txt](constraints.txt) records the installed dependency versions from the Python 3.12/macOS verification environment, including optional AI and development packages. To reproduce those versions on a compatible interpreter, add `-c constraints.txt` to the install command. The Docker image and the Python 3.12 CI job install with it. It is a version snapshot, not a cross-platform, hash-verified lockfile; unlisted platform dependencies can still vary.
 
 ## API
 
@@ -163,7 +164,7 @@ Interactive [Swagger docs](http://127.0.0.1:8011/docs), [ReDoc](http://127.0.0.1
 
 | Method | Endpoint | Behavior |
 | --- | --- | --- |
-| `GET` | `/api/health` | Startup status, mode, embedding backend, upload limit |
+| `GET` | `/api/health` | Status, mode, embedding backend, upload limit; checks SQLite and Chroma and returns `503` if either is unreachable |
 | `POST` | `/api/documents?filename=handbook.txt` | Raw binary upload; returns indexed document (`201`) |
 | `GET` | `/api/documents` | Documents, status, chunk count, extraction warnings |
 | `DELETE` | `/api/documents/{uuid}` | Delete vectors, chunks, document, and cited history (`204`) |
@@ -195,7 +196,7 @@ Application errors have this shape:
 {"error":{"code":"no_text","message":"No text could be extracted. Image-only PDFs need OCR before upload."}}
 ```
 
-Common statuses: `413` size/text/page/chunk limits, `415` unsupported type, `422` invalid input/document, `404` unknown/unavailable documents, `409` documents changed during generation, `502` provider errors, `503` indexing/retrieval/provider availability, `504` provider timeout. Provider error bodies and credentials are not echoed to the client. Host validation and transport-level errors may be produced before application handlers.
+Common statuses: `413` size/text/page/chunk limits, `415` unsupported type, `422` invalid input/document, `404` unknown/unavailable documents, `409` duplicate content (`duplicate_document`), a document still being indexed (`document_busy`), or documents changed during generation, `502` provider errors, `503` indexing/retrieval/provider availability, `504` provider timeout. Provider error bodies and credentials are not echoed to the client. Host validation and transport-level errors may be produced before application handlers.
 
 ## Reliability and security decisions
 
@@ -204,6 +205,7 @@ See [the security assessment](SECURITY.md) for the four unresolved ChromaDB advi
 - **Citation provenance:** the provider returns source IDs and exact quotes. The server obtains filenames/pages from retrieved metadata and rejects unknown IDs, fabricated quotes, malformed evidence, or unsupported answers without citations. This does not prove every generated claim follows logically from the quotes. Check sources.
 - **Untrusted documents:** document text is JSON-encoded in user context, with an explicit system instruction to ignore embedded commands. The LLM has no tools or access to keys. This reduces risk; prompt injection is not a solved problem.
 - **Cross-store consistency:** SQLite is authoritative. Only `ready` documents are queried. Incomplete indexing remains visible as `failed`; deletion marks `deleting` before vector removal. Failed cleanup is retried on startup, and failed deletion can be retried through the API. No atomic transaction across SQLite and Chroma is claimed.
+- **Duplicate uploads:** the SHA-256 of the raw bytes is stored with each document. Re-uploading identical content (under any filename) while the original is `indexing` or `ready` is rejected with `409` before parsing. Failed or deleted documents can be uploaded again. Documents indexed before this check existed have no hash and are not matched.
 - **Concurrent deletion:** an answer is rejected if one of its source documents was deleted during generation. Successful document deletion also removes saved answers citing that document.
 - **File safety:** bounded raw-body streaming, sanitized display names, UTF-8/control-character checks, PDF signature/encryption checks, no retained originals, parser subprocess deadline. Image-only PDFs receive a useful error; mixed PDFs report skipped pages.
 - **Browser safety:** same-origin writes, loopback host allowlist, no CORS opt-in, plain-text DOM rendering, CSP, no framing, no content sniffing, and no-store response headers. API documentation is exempt from the application CSP to support its external UI assets.
@@ -231,7 +233,7 @@ HF_HOME=./data/model-cache python -m scripts.check_semantic
 
 After the model is cached, add `HF_HUB_OFFLINE=1` for an offline rerun. The script verifies normalized 384-dimensional embeddings, paraphrase ranking, Chroma retrieval, and vector deletion. It never calls an LLM.
 
-See [verification notes](docs/verification.md) for executed checks and explicit untested areas. GitHub Actions is configured; a successful remote CI run is not implied by local test results.
+See [verification notes](docs/verification.md) for executed checks and explicit untested areas. GitHub Actions runs lint and tests on Python 3.11–3.13, a Docker build with a health smoke test, and a non-blocking `pip-audit` job (weekly and on every push). A successful remote CI run is not implied by local test results.
 
 ## Docker
 
@@ -243,7 +245,7 @@ docker compose up --build
 
 Open [localhost:8000](http://127.0.0.1:8000). If occupied, change the host side of the Compose port mapping to `127.0.0.1:8011:8000`.
 
-For semantic mode, configure `.env` as described above and build with `INSTALL_AI=true docker compose up --build`. Start with a new named volume when changing embedding configuration. Compose sets `DATA_DIR=/app/data` and preserves that directory in the `assistant-data` volume. The image runs as a non-root user with one worker. Deleting the volume deletes the persisted workspace; ordinary `docker compose down` retains it. Docker execution was not verified in this environment because Docker is not installed.
+For semantic mode, configure `.env` as described above and build with `INSTALL_AI=true docker compose up --build`. Start with a new named volume when changing embedding configuration. Compose sets `DATA_DIR=/app/data` and preserves that directory in the `assistant-data` volume. The image runs as a non-root user with one worker. Deleting the volume deletes the persisted workspace; ordinary `docker compose down` retains it. The image installs with `constraints.txt`. The CI job builds the image and probes `/api/health`; that job has not been run locally because Docker is not installed on the development machine.
 
 ## Screenshots
 

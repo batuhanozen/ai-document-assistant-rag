@@ -2,10 +2,10 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 DATA_DIR=/app/data
 WORKDIR /app
 ARG INSTALL_AI=false
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml README.md LICENSE constraints.txt ./
 COPY app ./app
 RUN python -m pip install --upgrade 'pip>=26.2' \
-    && if [ "$INSTALL_AI" = "true" ]; then pip install '.[ai]'; else pip install .; fi \
+    && if [ "$INSTALL_AI" = "true" ]; then pip install -c constraints.txt '.[ai]'; else pip install -c constraints.txt .; fi \
     && useradd --create-home --uid 10001 assistant \
     && mkdir /app/data && chown assistant:assistant /app/data
 USER assistant

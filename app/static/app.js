@@ -21,7 +21,9 @@ async function api(path, options = {}) {
   const response = await fetch(`/api${path}`, options);
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(body?.error?.message || `Request failed (${response.status}).`);
+    const failure = new Error(body?.error?.message || `Request failed (${response.status}).`);
+    failure.code = body?.error?.code;
+    throw failure;
   }
   return response.status === 204 ? null : response.json();
 }
@@ -71,18 +73,27 @@ async function uploadFiles(files) {
   uploading = true;
   updateBusy();
   let completed = 0;
+  const skipped = [];
   try {
     for (const file of files) {
       if (!/\.(pdf|txt)$/i.test(file.name)) throw new Error("Choose a PDF or UTF-8 TXT file.");
       if (file.size > maxUploadMb * 1024 * 1024) throw new Error(`Files must be at most ${maxUploadMb} MB.`);
       $("upload-status").textContent = `Reading and indexing ${file.name}…`;
-      const doc = await api(`/documents?filename=${encodeURIComponent(file.name)}`, {
-        method: "POST", headers: {"Content-Type": "application/octet-stream"}, body: file,
-      });
-      completed++;
-      if (doc.warnings.length) showError(doc.warnings.join(" "));
+      try {
+        const doc = await api(`/documents?filename=${encodeURIComponent(file.name)}`, {
+          method: "POST", headers: {"Content-Type": "application/octet-stream"}, body: file,
+        });
+        completed++;
+        if (doc.warnings.length) showError(doc.warnings.join(" "));
+      } catch (error) {
+        if (error.code !== "duplicate_document") throw error;
+        skipped.push(error.message);
+      }
     }
-    $("upload-status").textContent = `${completed} document${completed === 1 ? "" : "s"} ready to explore.`;
+    $("upload-status").textContent = completed
+      ? `${completed} document${completed === 1 ? "" : "s"} ready to explore.`
+      : "No new documents were added.";
+    if (skipped.length) showError(skipped.join(" "));
   } catch (error) { showError(error.message); $("upload-status").textContent = "Upload stopped. You can try again."; }
   finally {
     uploading = false;

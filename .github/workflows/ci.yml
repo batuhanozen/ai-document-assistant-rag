@@ -2,6 +2,9 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    # Weekly, so new advisories surface even when the repository is idle.
+    - cron: "0 6 * * 1"
 permissions:
   contents: read
 jobs:
@@ -17,7 +20,42 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: python -m pip install --upgrade 'pip>=26.2'
-      - run: python -m pip install -e '.[dev]'
+      # constraints.txt records the Python 3.12 environment; other versions resolve freely.
+      - if: matrix.python-version == '3.12'
+        run: python -m pip install -c constraints.txt -e '.[dev]'
+      - if: matrix.python-version != '3.12'
+        run: python -m pip install -e '.[dev]'
       - run: ruff check app tests scripts
       - run: ruff format --check app tests scripts
       - run: pytest --cov=app --cov-report=term-missing
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t assistant:ci .
+      - name: Smoke test the demo container
+        run: |
+          docker run -d --name assistant -p 127.0.0.1:8000:8000 assistant:ci
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/api/health; then exit 0; fi
+            sleep 2
+          done
+          docker logs assistant
+          exit 1
+
+  audit:
+    # Known ChromaDB advisories without a patched release are documented in SECURITY.md.
+    # They are reported here, not silenced, and do not block merges.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade 'pip>=26.2' pip-audit
+      - run: python -m pip install -e .
+      - run: pip-audit

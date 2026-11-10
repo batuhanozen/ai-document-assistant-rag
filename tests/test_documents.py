@@ -84,3 +84,67 @@ def test_chunking_prefers_boundaries():
     assert all(c.text for c in chunks)
     with pytest.raises(ValueError):
         chunk_pages([Page(text)], 20, 10)
+
+
+def _sleeping_worker(connection, data, filename, config):
+    import time
+
+    time.sleep(60)
+
+
+def _crashing_worker(connection, data, filename, config):
+    import os
+
+    os._exit(3)
+
+
+def test_parser_timeout_terminates_the_subprocess(settings, monkeypatch):
+    import time
+
+    monkeypatch.setattr("app.services.documents._parse_worker", _sleeping_worker)
+    settings.parsing_timeout_seconds = 1
+    started = time.monotonic()
+    with pytest.raises(AppError) as failure:
+        parse_safely(make_pdf(["text"]), "slow.pdf", settings)
+    assert failure.value.code == "parsing_timeout"
+    assert time.monotonic() - started < 15
+
+
+def test_parser_crash_is_reported_as_invalid_pdf(settings, monkeypatch):
+    monkeypatch.setattr("app.services.documents._parse_worker", _crashing_worker)
+    with pytest.raises(AppError) as failure:
+        parse_safely(make_pdf(["text"]), "crash.pdf", settings)
+    assert failure.value.code == "invalid_pdf"
+
+
+class _Connection:
+    def __init__(self):
+        self.sent = []
+        self.closed = False
+
+    def send(self, message):
+        self.sent.append(message)
+
+    def close(self):
+        self.closed = True
+
+
+def test_parse_worker_reports_application_and_unexpected_errors(settings, monkeypatch):
+    from app.services.documents import _parse_worker
+
+    config = settings.model_dump(exclude={"llm_api_key"})
+    connection = _Connection()
+    _parse_worker(connection, b"", "empty.txt", config)
+    assert connection.sent == [("error", ("empty_file", "The uploaded file is empty.", 422))]
+    assert connection.closed
+
+    def explode(*args):
+        raise RuntimeError("private parser details")
+
+    monkeypatch.setattr("app.services.documents.parse_document", explode)
+    connection = _Connection()
+    _parse_worker(connection, b"x", "x.pdf", config)
+    status, payload = connection.sent[0]
+    assert status == "error" and payload[0] == "invalid_pdf"
+    assert "private" not in payload[1]
+    assert connection.closed

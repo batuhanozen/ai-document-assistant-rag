@@ -28,8 +28,11 @@ A failed indexing operation attempts vector cleanup and leaves a visible failed 
 Deletion first commits `deleting`, then removes vectors, then removes relational data.
 Failed deletion remains retryable and excluded from retrieval. Startup marks interrupted
 indexing as failed and retries cleanup of failed/deleting records. A process-level lock
-serializes storage workflows; run exactly one application worker. Provider calls happen
-outside that lock. Historical citations are snapshots; deleting a document also removes
+serializes SQLite/Chroma workflows; run exactly one application worker. Provider calls and
+embedding inference happen outside that lock. Embedding calls are serialized by a separate lock
+and issued in batches of 32, so a large upload cannot starve question embedding.
+Uploads store a SHA-256 of the raw bytes; identical content is rejected while the original is
+`indexing` or `ready`. Deleting an `indexing` document is refused with `409`. Historical citations are snapshots; deleting a document also removes
 history entries that reference it. In-flight answers are rejected if their documents were deleted.
 
 Embedding identity and chunking settings are stored in a SQLite metadata row. A mismatch

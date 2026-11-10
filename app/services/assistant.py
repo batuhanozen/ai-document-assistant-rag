@@ -1,8 +1,9 @@
+import hashlib
 import json
 import logging
 from threading import RLock
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.schemas import AnswerResponse, Citation, DocumentResponse
@@ -15,6 +16,8 @@ from app.services.llm import ABSTENTION, GeneratedAnswer, Provider, Source
 from app.services.vectors import VectorStore
 
 logger = logging.getLogger(__name__)
+
+ENCODE_BATCH_SIZE = 32
 
 
 class Assistant:
@@ -31,7 +34,10 @@ class Assistant:
         self.embedder = embedder
         self.vectors = vectors
         self.provider = provider
+        # ``lock`` serializes SQLite/Chroma workflows; ``encode_lock`` serializes the embedder,
+        # which may not be thread-safe, without holding ``lock`` during slow model inference.
         self.lock = RLock()
+        self.encode_lock = RLock()
         self._initialize()
 
     def _initialize(self) -> None:
@@ -78,48 +84,90 @@ class Assistant:
                 for d in session.scalars(select(Document).order_by(Document.uploaded_at.desc()))
             ]
 
+    def check_storage(self) -> None:
+        """Raise if either the relational or the vector store cannot be reached."""
+        try:
+            with self.sessions() as session:
+                session.execute(select(Metadata.key).limit(1)).all()
+            self.vectors.collection.count()
+        except Exception as exc:
+            logger.error("Storage health check failed (%s)", type(exc).__name__)
+            raise AppError(
+                "storage_unavailable", "Document storage is temporarily unavailable.", 503
+            ) from exc
+
+    def _encode(self, texts: list[str]) -> list[list[float]]:
+        # Encode in small batches so a large upload does not starve question embedding.
+        embeddings: list[list[float]] = []
+        for start in range(0, len(texts), ENCODE_BATCH_SIZE):
+            with self.encode_lock:
+                embeddings.extend(self.embedder.encode(texts[start : start + ENCODE_BATCH_SIZE]))
+        return embeddings
+
+    @staticmethod
+    def _reject_duplicate(session: Session, digest: str) -> None:
+        existing = session.scalar(
+            select(Document.name).where(
+                Document.content_hash == digest, Document.status.in_(["indexing", "ready"])
+            )
+        )
+        if existing:
+            raise AppError(
+                "duplicate_document",
+                f"This document is already in your library as \u201c{existing}\u201d.",
+                409,
+            )
+
     def upload(self, data: bytes, filename: str) -> DocumentResponse:
         name = safe_filename(filename)
+        digest = hashlib.sha256(data).hexdigest()
+        # Early, best-effort check so duplicates do not pay for parsing; re-checked under the lock.
+        with self.sessions() as session:
+            self._reject_duplicate(session, digest)
         parsed = parse_safely(data, name, self.settings)
         chunks = chunk_pages(parsed.pages, self.settings.chunk_size, self.settings.chunk_overlap)
         if len(chunks) > self.settings.max_chunks:
             raise AppError("too_many_chunks", "The document contains too many text chunks.", 413)
-        with self.lock:
-            document_id = identifier()
-            rows = [
-                Chunk(id=f"{document_id}:{i}", document_id=document_id, page=c.number, text=c.text)
-                for i, c in enumerate(chunks)
-            ]
-            with self.sessions.begin() as session:
-                document = Document(
+        document_id = identifier()
+        rows = [
+            Chunk(id=f"{document_id}:{i}", document_id=document_id, page=c.number, text=c.text)
+            for i, c in enumerate(chunks)
+        ]
+        with self.lock, self.sessions.begin() as session:
+            self._reject_duplicate(session, digest)
+            session.add(
+                Document(
                     id=document_id,
                     name=name,
                     size_bytes=len(data),
                     page_count=parsed.page_count,
                     chunk_count=len(chunks),
+                    content_hash=digest,
                     warnings=parsed.warnings,
                     chunks=rows,
                 )
-                session.add(document)
-            try:
-                embeddings = self.embedder.encode([c.text for c in chunks])
+            )
+        try:
+            embeddings = self._encode([c.text for c in chunks])
+            with self.lock:
                 self.vectors.add([row.id for row in rows], document_id, embeddings)
                 with self.sessions.begin() as session:
                     stored = session.get(Document, document_id)
                     stored.status = "ready"
                     session.flush()
                     result = DocumentResponse.model_validate(stored)
-            except Exception as exc:
+        except Exception as exc:
+            with self.lock:
                 with self.sessions.begin() as session:
                     session.get(Document, document_id).status = "failed"
                 try:
                     self.vectors.delete(document_id)
                 except Exception:
                     logger.warning("Vector cleanup pending for document %s", document_id)
-                logger.error("Document indexing failed (%s)", type(exc).__name__)
-                raise AppError(
-                    "indexing_failed", "Indexing failed. Delete the failed entry and retry.", 503
-                ) from exc
+            logger.error("Document indexing failed (%s)", type(exc).__name__)
+            raise AppError(
+                "indexing_failed", "Indexing failed. Delete the failed entry and retry.", 503
+            ) from exc
         logger.info("Document indexed: %s (%d chunks)", document_id, len(chunks))
         return result
 
@@ -129,6 +177,10 @@ class Assistant:
                 document = session.get(Document, document_id)
                 if not document:
                     raise AppError("document_not_found", "Document not found.", 404)
+                if document.status == "indexing":
+                    raise AppError(
+                        "document_busy", "The document is still being indexed. Try again soon.", 409
+                    )
                 document.status = "deleting"
             try:
                 self.vectors.delete(document_id)
@@ -138,9 +190,15 @@ class Assistant:
                 ) from exc
             with self.sessions.begin() as session:
                 # History snapshots also contain document text; remove affected answers.
-                for chat in session.scalars(select(Chat)):
-                    if any(c["document_id"] == document_id for c in chat.citations):
-                        session.delete(chat)
+                # json_each keeps the scan inside SQLite instead of loading every answer.
+                session.execute(
+                    text(
+                        "DELETE FROM chat_history WHERE EXISTS (SELECT 1 FROM "
+                        "json_each(chat_history.citations) "
+                        "WHERE json_extract(json_each.value, '$.document_id') = :document_id)"
+                    ),
+                    {"document_id": document_id},
+                )
                 session.delete(session.get(Document, document_id))
         logger.info("Document deleted: %s", document_id)
 
@@ -157,7 +215,7 @@ class Assistant:
                 return []
             try:
                 hits = self.vectors.search(
-                    self.embedder.encode([question])[0], selected, self.settings.retrieval_top_k
+                    self._encode([question])[0], selected, self.settings.retrieval_top_k
                 )
             except Exception as exc:
                 raise AppError(

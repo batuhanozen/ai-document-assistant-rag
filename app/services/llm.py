@@ -1,6 +1,7 @@
 import json
 import math
 import re
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -11,6 +12,9 @@ from app.api.schemas import Citation
 from app.config import Settings
 from app.errors import AppError
 from app.services.embeddings import terms
+
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+MAX_RETRY_DELAY = 5.0
 
 ABSTENTION = "I don't have enough information in the selected documents to answer that question."
 SYSTEM_PROMPT = """You answer questions using only the supplied document excerpts.
@@ -116,11 +120,50 @@ class DemoProvider:
 
 
 class OpenAICompatibleProvider:
-    def __init__(self, settings: Settings, client: httpx.Client | None = None):
+    def __init__(self, settings: Settings, client: httpx.Client | None = None, sleep=time.sleep):
         self.settings = settings
+        self.sleep = sleep
         self.client = client or httpx.Client(
             timeout=httpx.Timeout(settings.llm_timeout_seconds, connect=10), follow_redirects=False
         )
+
+    def _post(self, headers: dict, request: dict) -> bytes:
+        with self.client.stream(
+            "POST",
+            f"{self.settings.llm_base_url.rstrip('/')}/chat/completions",
+            headers=headers,
+            json=request,
+        ) as response:
+            response.raise_for_status()
+            body = bytearray()
+            for part in response.iter_bytes():
+                body.extend(part)
+                if len(body) > 256_000:
+                    raise AppError(
+                        "provider_response_invalid", "The AI response was too large.", 502
+                    )
+        return bytes(body)
+
+    def _post_with_retries(self, headers: dict, request: dict) -> bytes:
+        """Retry only transient failures; read timeouts are not retried to bound total latency."""
+        attempt = 0
+        while True:
+            delay = min(0.5 * 2**attempt, MAX_RETRY_DELAY)
+            try:
+                return self._post(headers, request)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in RETRYABLE_STATUS:
+                    raise
+                failure: httpx.HTTPError = exc
+                retry_after = exc.response.headers.get("retry-after", "")
+                if retry_after.isdigit():
+                    delay = min(float(retry_after), MAX_RETRY_DELAY)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                failure = exc
+            if attempt >= self.settings.llm_max_retries:
+                raise failure
+            attempt += 1
+            self.sleep(delay)
 
     def generate(self, question: str, sources: list[Source]) -> GeneratedAnswer:
         headers = {"Content-Type": "application/json"}
@@ -141,20 +184,7 @@ class OpenAICompatibleProvider:
             ],
         }
         try:
-            with self.client.stream(
-                "POST",
-                f"{self.settings.llm_base_url.rstrip('/')}/chat/completions",
-                headers=headers,
-                json=request,
-            ) as response:
-                response.raise_for_status()
-                body = bytearray()
-                for part in response.iter_bytes():
-                    body.extend(part)
-                    if len(body) > 256_000:
-                        raise AppError(
-                            "provider_response_invalid", "The AI response was too large.", 502
-                        )
+            body = self._post_with_retries(headers, request)
             envelope = json.loads(body)
             content = envelope["choices"][0]["message"]["content"]
             payload = json.loads(content)

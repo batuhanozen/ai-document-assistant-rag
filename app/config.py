@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o-mini"
     llm_api_key: SecretStr = SecretStr("")
     llm_timeout_seconds: float = Field(default=45, ge=1, le=180)
+    llm_max_retries: int = Field(default=2, ge=0, le=5)
     max_upload_mb: int = Field(default=10, ge=1, le=50)
     max_pdf_pages: int = Field(default=200, ge=1, le=1000)
     parsing_timeout_seconds: int = Field(default=30, ge=1, le=120)

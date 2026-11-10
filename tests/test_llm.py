@@ -27,6 +27,10 @@ def sources():
     ]
 
 
+def no_sleep(_seconds):
+    pass
+
+
 def valid_payload():
     return {
         "answer": "Employees have 28 days of leave.",
@@ -82,7 +86,9 @@ def test_mocked_provider_request_and_untrusted_context(settings, sources):
 
     settings.llm_api_key = SecretStr("test-key")
     with httpx.Client(transport=httpx.MockTransport(respond)) as http:
-        result = OpenAICompatibleProvider(settings, http).generate("How much leave?", sources)
+        result = OpenAICompatibleProvider(settings, http, sleep=no_sleep).generate(
+            "How much leave?", sources
+        )
     assert not result.insufficient_context
     assert result.citations[0].chunk_id == "doc-1:0"
 
@@ -93,7 +99,7 @@ def test_provider_http_errors_are_sanitized(settings, sources, status, expected)
         transport=httpx.MockTransport(lambda r: httpx.Response(status, text="secret-key"))
     ) as http:
         with pytest.raises(AppError) as failure:
-            OpenAICompatibleProvider(settings, http).generate("question", sources)
+            OpenAICompatibleProvider(settings, http, sleep=no_sleep).generate("question", sources)
     assert failure.value.status == expected
     assert "secret-key" not in failure.value.message
 
@@ -104,7 +110,7 @@ def test_provider_timeout(settings, sources):
 
     with httpx.Client(transport=httpx.MockTransport(timeout)) as http:
         with pytest.raises(AppError) as failure:
-            OpenAICompatibleProvider(settings, http).generate("question", sources)
+            OpenAICompatibleProvider(settings, http, sleep=no_sleep).generate("question", sources)
     assert failure.value.status == 504
     assert failure.value.code == "provider_timeout"
 
@@ -115,7 +121,7 @@ def test_bad_provider_envelopes(settings, sources, body):
         transport=httpx.MockTransport(lambda r: httpx.Response(200, content=body))
     ) as http:
         with pytest.raises(AppError) as failure:
-            OpenAICompatibleProvider(settings, http).generate("question", sources)
+            OpenAICompatibleProvider(settings, http, sleep=no_sleep).generate("question", sources)
     assert failure.value.status == 502
 
 
@@ -142,3 +148,79 @@ def test_demo_matches_inflections_in_timeline(sources):
     )
     assert "2 November 2026" in result.answer
     assert result.citations[0].quote in text
+
+
+def ok_response():
+    return httpx.Response(
+        200, json={"choices": [{"message": {"content": json.dumps(valid_payload())}}]}
+    )
+
+
+def test_transient_failures_are_retried_with_backoff(settings, sources):
+    responses = [httpx.Response(503), httpx.Response(429, headers={"Retry-After": "3"})]
+    delays = []
+
+    def respond(request):
+        return responses.pop(0) if responses else ok_response()
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        provider = OpenAICompatibleProvider(settings, http, sleep=delays.append)
+        result = provider.generate("question", sources)
+    assert not result.insufficient_context
+    assert delays == [0.5, 3.0]
+
+
+def test_connection_errors_are_retried_then_reported(settings, sources):
+    calls = []
+
+    def refuse(request):
+        calls.append(1)
+        raise httpx.ConnectError("private host", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(refuse)) as http:
+        with pytest.raises(AppError) as failure:
+            OpenAICompatibleProvider(settings, http, sleep=no_sleep).generate("question", sources)
+    assert len(calls) == settings.llm_max_retries + 1
+    assert failure.value.status == 502
+    assert "private host" not in failure.value.message
+
+
+@pytest.mark.parametrize("response", [httpx.Response(401), httpx.Response(400)])
+def test_client_errors_are_not_retried(settings, sources, response):
+    calls = []
+
+    def respond(request):
+        calls.append(1)
+        return response
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        with pytest.raises(AppError):
+            OpenAICompatibleProvider(settings, http, sleep=no_sleep).generate("question", sources)
+    assert calls == [1]
+
+
+def test_read_timeouts_are_not_retried(settings, sources):
+    calls = []
+
+    def timeout(request):
+        calls.append(1)
+        raise httpx.ReadTimeout("slow", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(timeout)) as http:
+        with pytest.raises(AppError):
+            OpenAICompatibleProvider(settings, http, sleep=no_sleep).generate("question", sources)
+    assert calls == [1]
+
+
+def test_retries_can_be_disabled(settings, sources):
+    settings.llm_max_retries = 0
+    calls = []
+
+    def respond(request):
+        calls.append(1)
+        return httpx.Response(503)
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        with pytest.raises(AppError):
+            OpenAICompatibleProvider(settings, http, sleep=no_sleep).generate("question", sources)
+    assert calls == [1]

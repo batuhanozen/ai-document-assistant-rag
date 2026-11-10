@@ -32,6 +32,8 @@ class Document(Base):
     page_count: Mapped[int | None]
     chunk_count: Mapped[int]
     status: Mapped[str] = mapped_column(String, default="indexing")
+    # SHA-256 of the raw upload; NULL for documents indexed before duplicate detection existed.
+    content_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     uploaded_at: Mapped[str] = mapped_column(String, default=timestamp)
     warnings: Mapped[list[str]] = mapped_column(JSON, default=list)
     chunks: Mapped[list["Chunk"]] = relationship(cascade="all, delete-orphan")

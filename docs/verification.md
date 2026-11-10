@@ -82,3 +82,9 @@ python -m pip check
 ```
 
 To audit dependencies in a separate tooling environment, install `pip-audit` there and use `pip-audit --path <application-site-packages>`. Inspect the full results rather than treating an exit code as proof of exploitability or safety. Do not upload private documents or secrets to scanners.
+
+## Update — 10 November 2026 (Phase A hardening)
+
+Executed locally on Python 3.12.7/macOS in a fresh virtual environment: **83 passed**, **96% statement coverage**, Ruff lint and format clean, `pip check` clean, `node --check` clean, and a live Uvicorn run confirming `/api/health` storage status plus `409` on a duplicate upload and a working question afterwards. `pip install --dry-run -c constraints.txt '.[dev]'` resolved.
+
+Not executed: the new Docker CI job and the `pip-audit` job (Docker is not installed locally; neither has run on GitHub), and the Docker image with `constraints.txt`. The result of the first CI run for these changes must be read from GitHub.

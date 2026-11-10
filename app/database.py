@@ -21,4 +21,16 @@ def create_database(data_dir: Path) -> sessionmaker[Session]:
         cursor.close()
 
     Base.metadata.create_all(engine)
+    _add_missing_columns(engine)
     return sessionmaker(engine, expire_on_commit=False)
+
+
+def _add_missing_columns(engine) -> None:
+    """Upgrade data directories created before ``documents.content_hash`` existed."""
+    with engine.begin() as connection:
+        columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(documents)")}
+        if "content_hash" not in columns:
+            connection.exec_driver_sql("ALTER TABLE documents ADD COLUMN content_hash VARCHAR(64)")
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_documents_content_hash ON documents (content_hash)"
+            )

@@ -224,3 +224,131 @@ def test_invalid_or_cross_scheme_origins_are_rejected(client, origin):
 def test_non_ascii_unrelated_header_does_not_crash(client):
     response = client.get("/api/health", headers={b"X-Display-Name": b"caf\xe9"})
     assert response.status_code == 200
+
+
+def test_duplicate_content_is_rejected_regardless_of_filename(client, upload):
+    first = upload("Employees receive 28 days of leave.", "a.txt")
+    assert first.status_code == 201
+    duplicate = upload("Employees receive 28 days of leave.", "renamed.txt")
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["code"] == "duplicate_document"
+    assert "a.txt" in duplicate.json()["error"]["message"]
+    assert upload("Different text about equipment.", "b.txt").status_code == 201
+    assert len(client.get("/api/documents").json()) == 2
+    assert client.app.state.assistant.vectors.collection.count() == 2
+
+
+def test_duplicate_can_be_reuploaded_after_delete_or_failure(client, upload, monkeypatch):
+    service = client.app.state.assistant
+    doc = upload("Employees receive 28 days of leave.").json()
+    assert client.delete(f"/api/documents/{doc['id']}").status_code == 204
+    assert upload("Employees receive 28 days of leave.").status_code == 201
+
+    with monkeypatch.context() as patch:
+        patch.setattr(service.vectors, "add", lambda *args: (_ for _ in ()).throw(RuntimeError()))
+        assert upload("A second document that fails.", "fail.txt").status_code == 503
+    assert upload("A second document that fails.", "retry.txt").status_code == 201
+
+
+def test_duplicate_is_rejected_before_parsing(client, upload, monkeypatch):
+    upload()
+    monkeypatch.setattr("app.services.assistant.parse_safely", lambda *a: pytest.fail("parsed"))
+    assert upload().status_code == 409
+
+
+def test_legacy_database_gains_content_hash_column(tmp_path):
+    import sqlite3
+
+    from app.database import create_database
+
+    path = tmp_path / "assistant.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE documents (id VARCHAR PRIMARY KEY, name VARCHAR(200), size_bytes INTEGER, "
+        "page_count INTEGER, chunk_count INTEGER, status VARCHAR, uploaded_at VARCHAR, "
+        "warnings JSON)"
+    )
+    connection.execute(
+        "INSERT INTO documents VALUES ('d1', 'old.txt', 1, NULL, 1, 'ready', 't', '[]')"
+    )
+    connection.commit()
+    connection.close()
+    sessions = create_database(tmp_path)
+    create_database(tmp_path)  # a second start must be a no-op
+    with sessions() as session:
+        document = session.get(Document, "d1")
+        assert document.name == "old.txt" and document.content_hash is None
+
+
+def test_indexing_document_cannot_be_deleted(client, upload):
+    service = client.app.state.assistant
+    doc = upload().json()
+    with service.sessions.begin() as session:
+        session.get(Document, doc["id"]).status = "indexing"
+    response = client.delete(f"/api/documents/{doc['id']}")
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "document_busy"
+
+
+def test_delete_removes_only_answers_citing_that_document(client, upload):
+    first = upload("Employees receive 28 days of annual leave.", "leave.txt").json()
+    second = upload("The equipment allowance is EUR 350 for a laptop.", "gear.txt").json()
+    leave = client.post("/api/questions", json={"question": "annual leave days"}).json()
+    gear = client.post("/api/questions", json={"question": "equipment allowance laptop"}).json()
+    assert leave["citations"][0]["document_id"] == first["id"]
+    assert gear["citations"][0]["document_id"] == second["id"]
+    assert client.delete(f"/api/documents/{first['id']}").status_code == 204
+    assert [item["id"] for item in client.get("/api/history").json()] == [gear["id"]]
+
+
+def test_health_reports_storage_and_fails_when_unavailable(client, monkeypatch):
+    assert client.get("/api/health").json()["storage"] == "ok"
+    service = client.app.state.assistant
+
+    def broken():
+        raise RuntimeError("disk gone: /private/path")
+
+    monkeypatch.setattr(service.vectors.collection, "count", broken, raising=False)
+    response = client.get("/api/health")
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "storage_unavailable"
+    assert "private" not in response.text
+
+
+def test_slow_embedding_does_not_hold_the_storage_lock(settings):
+    import threading
+
+    from app.database import create_database
+    from app.services.assistant import Assistant
+    from app.services.embeddings import HashingEmbedder
+    from app.services.llm import DemoProvider
+    from app.services.vectors import VectorStore
+
+    class SlowEmbedder(HashingEmbedder):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def encode(self, texts):
+            self.entered.set()
+            assert self.release.wait(10)
+            return super().encode(texts)
+
+    embedder = SlowEmbedder()
+    service = Assistant(
+        settings,
+        create_database(settings.data_dir),
+        embedder,
+        VectorStore(settings.data_dir / "chroma"),
+        DemoProvider(),
+    )
+    worker = threading.Thread(target=service.upload, args=(b"Slow document text.", "slow.txt"))
+    worker.start()
+    try:
+        assert embedder.entered.wait(10)
+        finished = threading.Event()
+        threading.Thread(target=lambda: (service.clear_history(), finished.set())).start()
+        assert finished.wait(5), "storage lock was held during embedding"
+    finally:
+        embedder.release.set()
+        worker.join(10)
+    assert service.documents()[0].status == "ready"
